@@ -46,16 +46,22 @@ async def add_image(upload_image: UploadFile):
     )
     compressed_image.save(Path() / "Content" / "images" / "previews" / hashedFileName)
     print((Path() / "Content" / "images" / "full_size" / hashedFileName).absolute())
-    return {"imageId": await database.add_image(str(hashedFileName))}
+    return {"imageId": await database.add_image(str(hashedFileName)), "image": hashedFileName}
 
 
-@router.get('/sections/{SectionId}', response_model=List[ImageWithAllInfo], tags=["Images"])
+@router.get('/sections/{SectionId}', response_model=List[ImageWithAllInfo], tags=["Sections", "Images"])
 async def get_Section_Images(SectionId: int):
     try:
         return await database.get_section_images(SectionId)
     except DatabaseError:
         raise HTTPException(status_code=500, detail='Database error')
 
+@router.get('/folders/{FolderId}', response_model=List[ImageWithAllInfo], tags=["Folders", "Images"])
+async def get_folder_images(FolderId: int):
+    try:
+        return await database.get_folder_images(FolderId)
+    except DatabaseError:
+        raise HTTPException(status_code=500, detail='Database error')
 
 @router.delete('/images/{imageId}', tags=["Images"])
 async def delete_image(user: NeedToken, imageId: int):

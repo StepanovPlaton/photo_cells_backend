@@ -43,8 +43,7 @@ async def edit_info(user: NeedToken, info: EditInfo):
 @router.get('/about', status_code=200, tags=["Admin"])
 async def AdminInfo():
     try:
-        Admin = await database.get_info()
-        return {'Admin': Admin}
+        return await database.get_info()
     except DatabaseError:
         return HTTPException(status_code=500, detail='Database Error')
 

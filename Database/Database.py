@@ -2,8 +2,8 @@ from __future__ import annotations
 from typing import Any, List
 
 from databases import Database
-from Models.Admin import AdminInDatabase
-from Models.Images import ImageWithAllInfo, ImageWithAllInfoInDatabase, SectionInDatabase, SectionWithAllInfo, \
+from Models.Admin import AdminInDatabase, AdminInfo
+from Models.Images import FolderWithAllInfo, FolderWithAllInfoInDatabase, ImageWithAllInfo, ImageWithAllInfoInDatabase, SectionInDatabase, SectionWithAllInfo, \
     SectionWithAllInfoInDatabase, TagInDatabase
 from Utils import *
 from Utils.Env import EnvClass
@@ -33,12 +33,13 @@ class DatabaseBaseClass:
                 'CREATE TABLE IF NOT EXISTS admin(' \
                 '    hashOfPassword TEXT PRIMARY KEY,' \
                 '    aboutMe TEXT UNIQUE,' \
-                '    avatar TEXT);'
+                '    avatar INTEGER);'
             )
             await self.request(
                 'CREATE TABLE IF NOT EXISTS images(' \
                 '    imageId INTEGER PRIMARY KEY AUTOINCREMENT,' \
-                '    image TEXT NOT NULL);'
+                '    image TEXT NOT NULL, '\
+                '    priority INTEGER NOT NULL DEFAULT 50);'
             )
             await self.request(
                 'CREATE TABLE IF NOT EXISTS images_to_tags(' \
@@ -60,7 +61,20 @@ class DatabaseBaseClass:
             await self.request(
                 'CREATE TABLE IF NOT EXISTS sections(' \
                 '    sectionId INTEGER PRIMARY KEY AUTOINCREMENT,' \
+                '    description TEXT,' \
+                '    cover INTEGER,'
                 '    section TEXT);'
+            )
+            await self.request(
+                'CREATE TABLE IF NOT EXISTS sections_to_folder(' \
+                '    sectionId INTEGER,' \
+                '    folderId INTEGER, ' \
+                '    UNIQUE("sectionId","folderId"));'
+            )
+            await self.request(
+                'CREATE TABLE IF NOT EXISTS folders(' \
+                '    folderId INTEGER PRIMARY KEY AUTOINCREMENT,' \
+                '    folder TEXT);'
             )
             hashOfPassword = await self.request("SELECT hashOfPassword FROM admin")
             if (hashOfPassword and hashOfPassword[0]["hashOfPassword"]):
@@ -113,6 +127,7 @@ class DatabaseBaseClass:
         image: ImageWithAllInfo = ImageWithAllInfo(
             imageId=image_from_database[0]["imageId"],
             image=image_from_database[0]["image"],
+            priority=image_from_database[0]["priority"],
             tags=[],
             sections=[]
         )
@@ -132,7 +147,10 @@ class DatabaseBaseClass:
                     image["sections"].append(
                         SectionInDatabase(
                             sectionId=image_info["sectionId"],
-                            section=image_info["section"]
+                            section=image_info["section"],
+                            description=image_info["description"],
+                            cover=image_info["cover"],
+                            coverId=image_info["coverId"]
                         )
                     )
         return image
@@ -155,6 +173,9 @@ class DatabaseBaseClass:
         section: SectionWithAllInfo = SectionWithAllInfo(
             sectionId=section_from_database[0]["sectionId"],
             section=section_from_database[0]["section"],
+            description=section_from_database[0]["description"],
+            cover=section_from_database[0]["cover"],
+            coverId=section_from_database[0]["coverId"],
             tags=[],
         )
         for section_info in section_from_database:
@@ -169,23 +190,61 @@ class DatabaseBaseClass:
                     )
         return section
 
+    def folderFromDatabaseToJson(self,
+                                  folder_from_database: list[FolderWithAllInfoInDatabase]) -> FolderWithAllInfo:
+        folder: FolderWithAllInfo = FolderWithAllInfo(
+            folderId=folder_from_database[0]["folderId"],
+            folder=folder_from_database[0]["folder"],
+            sections=[],
+        )
+        for folder_info in folder_from_database:
+            if(folder_info["sectionId"]):
+                section_in_folder: SectionWithAllInfoInDatabase = SectionWithAllInfoInDatabase(
+                    sectionId=folder_info["sectionId"],
+                    section=folder_info["section"],
+                    description=folder_info["description"],
+                    cover=folder_info["cover"],
+                    coverId=folder_info["coverId"],
+                    tag=folder_info["tag"],
+                    tagId=folder_info["tagId"]
+                )
+                folder["sections"].append(self.sectionFromDatabaseToJson([section_in_folder]))
+        return folder
+
+    def foldersFromDatabaseToJson(self, folders_from_database: List[FolderWithAllInfoInDatabase]) -> list[
+        FolderWithAllInfo]:
+        folders: List[FolderWithAllInfo] = []
+        if (not folders_from_database): return []
+        folder_info: List[FolderWithAllInfoInDatabase] = []
+        for folder_in_database_line in folders_from_database:
+            if (len(folder_info) > 0 and folder_in_database_line["folderId"] != folder_info[-1]["folderId"]):
+                folders.append(self.folderFromDatabaseToJson(folder_info))
+                folder_info = []
+            folder_info.append(folder_in_database_line)
+        folders.append(self.folderFromDatabaseToJson(folder_info))
+        return folders
+
 
 class DatabaseClass(DatabaseBaseClass):
     # --- REQUESTS ---
 
     getAdminRequest = "SELECT * FROM admin"
     getPasswordRequest = "SELECT hashOfPassword FROM admin"
-    getInfoRequest = "SELECT aboutMe FROM admin"
+    getInfoRequest = "SELECT aboutMe, images.image as avatar FROM admin " \
+                     "LEFT OUTER JOIN images ON images.imageId = avatar" 
     editInfoRequest = "UPDATE admin set aboutMe=:info"
 
     # - IMAGES -
-    getAllImagesRequest = "SELECT images.*, tags.*, sections.* FROM images " \
+    getAllImagesRequest = "SELECT images.*, tags.*, sections.*, images.image AS cover, sections.cover as coverId FROM images " \
                           "LEFT OUTER JOIN images_to_tags itt ON itt.imageId = images.imageId " \
                           "LEFT OUTER JOIN tags ON itt.tagId = tags.tagId " \
                           "LEFT OUTER JOIN tags_to_sections tts ON tts.tagId = tags.tagId " \
-                          "LEFT OUTER JOIN sections ON sections.sectionId = tts.sectionId "
+                          "LEFT OUTER JOIN sections ON sections.sectionId = tts.sectionId " \
+                          "LEFT OUTER JOIN sections_to_folder stf ON stf.sectionId = sections.sectionId " \
+                          "LEFT OUTER JOIN folders ON folders.folderId = stf.folderId "
     getAllImages = getAllImagesRequest + "ORDER BY images.imageId"
     getSectionImagesRequest = getAllImagesRequest + "WHERE sections.sectionId = :sectionId"
+    getFolderImagesRequest = getAllImagesRequest + "WHERE folders.folderId = :folderId"
     getImageById = getAllImagesRequest + "WHERE images.imageId=:imageId"
 
     addImageRequest = "INSERT INTO images(image) VALUES(:image);"
@@ -194,6 +253,7 @@ class DatabaseClass(DatabaseBaseClass):
     deleteTagFromImageRequest = "DELETE FROM images_to_tags WHERE imageId=:imageId AND tagId=:tagId;"
     deleteImageRequest = "DELETE FROM images WHERE imageId=:imageId"
     deletedImageMentions = "DELETE FROM images_to_tags WHERE imageId=:imageId"
+    changeImagePriorityRequest = "UPDATE images SET priority=:priority WHERE imageId=:imageId"
 
     # - TAGS -
     getTagsRequest = "SELECT * FROM tags"
@@ -205,15 +265,37 @@ class DatabaseClass(DatabaseBaseClass):
     getLastTagId = "SELECT MAX(tagId) FROM tags"
 
     # - SECTIONS -
-    getSectionsRequest = "SELECT sections.*, tags.* FROM sections " \
+    getSectionsRequest = "SELECT sections.sectionId, sections.section, sections.description, " \
+                         " tags.*, images.image AS cover, sections.cover as coverId FROM sections " \
                          "LEFT OUTER JOIN tags_to_sections tts ON tts.sectionId = sections.sectionId " \
-                         "LEFT OUTER JOIN tags ON tags.tagId = tts.tagId"
-    createSectionRequest = "INSERT INTO sections(section) VALUES(:section_name)"
+                         "LEFT OUTER JOIN tags ON tags.tagId = tts.tagId " \
+                         "LEFT OUTER JOIN images ON images.imageId = sections.cover "
+    getSectionRequest = getSectionsRequest + "WHERE sections.sectionId = :sectionId"
+    createSectionRequest = "INSERT INTO sections(section, description, cover) VALUES(:section_name, :description, :cover)"
     addTagToSectionRequest = "INSERT or IGNORE INTO tags_to_sections VALUES(:tagId, :sectionId);"
     deleteTagFromSectionRequest = "DELETE FROM tags_to_sections WHERE sectionId=:sectionId AND tagId=:tagId;"
-    changeSectionNameRequest = "UPDATE sections SET section=:section WHERE sectionId=:sectionId"
+    changeSectionRequest = "UPDATE sections SET section=:section, description=:description, cover=:cover WHERE sectionId=:sectionId"
     deleteSectionRequest = "DELETE FROM sections WHERE sectionId=:sectionId"
-    deletedSectionMentions = "DELETE FROM tags_to_sections WHERE sectionId=:sectionId"
+    deletedSectionMentions1 = "DELETE FROM tags_to_sections WHERE sectionId=:sectionId"
+    deletedSectionMentions2 = "DELETE FROM sections_to_folder WHERE sectionId=:sectionId"
+    getLastSectionId = "SELECT MAX(sectionId) FROM sections"
+
+    # - FOLDER -
+    getFoldersRequest =  "SELECT folders.*, sections.sectionId, sections.section, sections.description, " \
+                         "tags.*, images.image AS cover, sections.cover as coverId FROM folders " \
+                         "LEFT OUTER JOIN sections_to_folder stf ON stf.folderId = folders.folderId " \
+                         "LEFT OUTER JOIN sections ON sections.sectionId = stf.sectionId " \
+                         "LEFT OUTER JOIN tags_to_sections tts ON tts.sectionId = sections.sectionId " \
+                         "LEFT OUTER JOIN tags ON tags.tagId = tts.tagId " \
+                         "LEFT OUTER JOIN images ON images.imageId = sections.cover"
+    createFolderRequest = "INSERT INTO folders(folder) VALUES(:folder)"
+    addSectionToFolderRequest = "INSERT or IGNORE INTO sections_to_folder VALUES(:sectionId, :folderId);"
+    changeFolderNameRequest = "UPDATE folders SET folder=:folder WHERE folderId=:folderId"
+    deleteSectionFromFolderRequest = "DELETE FROM sections_to_folder WHERE folderId=:folderId AND sectionId=:sectionId;"
+    getLastFolderId = "SELECT MAX(folderId) FROM folders"
+    deleteFolderRequest = "DELETE FROM folders WHERE folderId=:folderId"
+    deletedFolderMentions = "DELETE FROM sections_to_folder WHERE folderId=:folderId"
+
 
     # --- FUNCTIONS ---
 
@@ -227,9 +309,10 @@ class DatabaseClass(DatabaseBaseClass):
         password = await self.request(self.getPasswordRequest)
         return password[0]["hashOfPassword"] # type: ignore
 
-    async def get_info(self) -> str:
-        info = await self.request(self.getInfoRequest)
-        return info[0] # type: ignore
+    async def get_info(self) -> AdminInfo | None:
+        info: List[AdminInfo] | None \
+            = await self.request(self.getInfoRequest) # type: ignore
+        return info[0] if info and len(info) > 0 else None
 
     async def edit_info(self, info: str) -> None:
         await self.request(self.editInfoRequest, info=info)
@@ -260,21 +343,57 @@ class DatabaseClass(DatabaseBaseClass):
             = await self.request(self.getSectionsRequest)  # type: ignore
         return self.sectionsFromDatabaseToJson(sections) if sections else []
 
+    async def get_section(self, sectionId: int) -> SectionWithAllInfo:
+        sections: List[SectionWithAllInfoInDatabase] | None \
+            = await self.request(self.getSectionRequest, sectionId=sectionId)  # type: ignore
+        if(sections is None): return []
+        return self.sectionsFromDatabaseToJson(sections)[0]
+
     async def add_tag_to_section(self, sectionId: int, tagId: int):
         await self.request(self.addTagToSectionRequest, sectionId=sectionId, tagId=tagId)
 
     async def delete_tag_from_section(self, sectionId: int, tagId: int):
         await self.request(self.deleteTagFromSectionRequest, sectionId=sectionId, tagId=tagId)
 
-    async def change_section_name(self, sectionId: int, sectionName: str):
-        await self.request(self.changeSectionNameRequest, sectionId=sectionId, section=sectionName)
+    async def change_section(self, sectionId: int, sectionName: str, description: str, cover: int):
+        await self.request(self.changeSectionRequest, sectionId=sectionId, section=sectionName, description=description, cover=cover)
+        return (await self.get_section(sectionId))
 
-    async def create_section(self, section: str) -> None:
-        await self.request(self.createSectionRequest, section_name=section)
+    async def create_section(self, section: str, description: str, cover: int) -> None:
+        await self.request(self.createSectionRequest, section_name=section, description=description, cover=cover)
+        newSectionIdRequestResult = await self.request(self.getLastSectionId)
+        if (newSectionIdRequestResult is None): raise DatabaseError()
+        return newSectionIdRequestResult[0]["MAX(sectionId)"]
 
     async def delete_section(self, sectionId: int) -> None:
         await self.request(self.deleteSectionRequest, sectionId=sectionId)
-        await self.request(self.deletedSectionMentions, sectionId=sectionId)
+        await self.request(self.deletedSectionMentions1, sectionId=sectionId)
+        await self.request(self.deletedSectionMentions2, sectionId=sectionId)
+
+    # - FOLDERS - 
+    async def get_folders(self):
+        folders: List[FolderWithAllInfoInDatabase] | None = \
+            await self.request(self.getFoldersRequest) #type: ignore
+        return self.foldersFromDatabaseToJson(folders) if folders else []
+        
+    async def create_folder(self, folder: str) -> None:
+        await self.request(self.createFolderRequest, folder=folder)
+        newFolderIdRequestResult = await self.request(self.getLastFolderId)
+        if (newFolderIdRequestResult is None): raise DatabaseError()
+        return newFolderIdRequestResult[0]["MAX(folderId)"]
+
+    async def delete_folder(self, folderId: int) -> None:
+        await self.request(self.deleteFolderRequest, folderId=folderId)
+        await self.request(self.deletedFolderMentions, folderId=folderId)
+
+    async def add_section_to_folder(self, folderId: int, sectionId: int):
+        await self.request(self.addSectionToFolderRequest, sectionId=sectionId, folderId=folderId)
+
+    async def delete_section_from_folder(self, folderId: int, sectionId: int):
+        await self.request(self.deleteSectionFromFolderRequest, sectionId=sectionId, folderId=folderId)
+
+    async def change_folder_name(self, folderId: int, folderName: str):
+        await self.request(self.changeFolderNameRequest, folderId=folderId, folder=folderName)
 
     # - IMAGES -
     async def get_all_images(self) -> List[ImageWithAllInfo]:
@@ -285,6 +404,11 @@ class DatabaseClass(DatabaseBaseClass):
     async def get_section_images(self, sectionId: int) -> List[ImageWithAllInfo]:
         images: List[ImageWithAllInfoInDatabase] | None \
             = await self.request(self.getSectionImagesRequest, sectionId=sectionId)  # type: ignore
+        return self.imagesFromDatabaseToJson(images) if images else []
+
+    async def get_folder_images(self, folderId: int) -> List[ImageWithAllInfo]:
+        images: List[ImageWithAllInfoInDatabase] | None \
+            = await self.request(self.getFolderImagesRequest, folderId=folderId)  # type: ignore
         return self.imagesFromDatabaseToJson(images) if images else []
 
     async def get_image(self, imageId: int) -> ImageWithAllInfo | None:
@@ -307,3 +431,6 @@ class DatabaseClass(DatabaseBaseClass):
     async def delete_image(self, imageId: int) -> None:
         await self.request(self.deleteImageRequest, imageId=imageId)
         await self.request(self.deletedImageMentions, imageId=imageId)
+
+    async def change_image_priority(self, imageId: int, priority: int):
+        await self.request(self.changeImagePriorityRequest, imageId=imageId, priority=priority)

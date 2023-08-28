@@ -18,3 +18,7 @@ class AdminInDatabase(TypedDict):
     hashOfPassword: str
     aboutMe: str | None
     avatar: str | None
+
+class AdminInfo(TypedDict):
+    aboutMe: str
+    avatar: str
